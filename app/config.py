@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     extraction_write_html: bool = True
     extraction_write_json: bool = True
     extraction_write_doctags: bool = True
+    extraction_extract_images: bool = False
+    extraction_formula_enrichment: bool = False
 
     # Langfuse (optional – empty keys disable tracing)
     langfuse_public_key: str = ""

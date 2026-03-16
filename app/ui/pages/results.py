@@ -7,10 +7,20 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    pdf_viewer = None
 
 from app.db.models import AnalysisRun, Paper, PaperAnswer, PaperExtraction
 from app.db.session import check_connection, get_session
+from app.ui.doctags_search import find_first_match_in_doctags
+from app.ui.html_search import highlight_first_match_in_html, inline_images_as_base64
 from app.ui.paper_preview import render_paper_table_with_preview
+
+EVIDENCE_FIND_STATE_KEY = "results_evidence_find"
 
 st.title("📊 Results")
 st.caption("View per-paper synthesis answers and export to CSV or JSON.")
@@ -210,6 +220,15 @@ for a in visible_answers_data:
     preview_rows.append(preview_row)
 
 st.subheader(f"Results ({len(df)} rows)")
+top_viewer_width_pct = st.slider(
+    "Top viewer width (%)",
+    min_value=30,
+    max_value=70,
+    value=42,
+    step=2,
+    key="results_top_viewer_width_pct",
+    help="Adjust the width split between the results table and the top PDF preview.",
+)
 preview_columns = ["Title"]
 if show_short_title:
     preview_columns.append("Short Title")
@@ -222,6 +241,7 @@ render_paper_table_with_preview(
     display_columns=preview_columns,
     viewer_title="Paper PDF",
     viewer_height=950,
+    viewer_pane_ratio=top_viewer_width_pct / 100,
     empty_message="No papers match the current filters.",
 )
 st.caption("The full results matrix remains available below for scanning answers across runs.")
@@ -230,6 +250,20 @@ st.dataframe(df, use_container_width=True, height=400)
 # ── Expandable evidence details ───────────────────────────────────────────────
 
 st.subheader("Evidence Details")
+evidence_viewer_width_pct = st.slider(
+    "Evidence viewer width (%)",
+    min_value=30,
+    max_value=70,
+    value=42,
+    step=2,
+    key="results_evidence_viewer_width_pct",
+    help="Adjust the width split between Q/A details and the evidence viewer.",
+)
+evidence_details_width = 100 - evidence_viewer_width_pct
+active_find_state = st.session_state.get(EVIDENCE_FIND_STATE_KEY)
+if active_find_state is not None and not isinstance(active_find_state, dict):
+    st.session_state.pop(EVIDENCE_FIND_STATE_KEY, None)
+
 for a in answers_data:
     paper = papers.get(a["paper_id"])
     run = run_by_id[a["run_id"]]
@@ -240,31 +274,171 @@ for a in answers_data:
     expander_label = f"📄 {title}" if len(selected_runs) == 1 else f"📄 {title} [{run['run_name']}]"
     with st.expander(expander_label, expanded=False):
         extraction = extraction_by_paper.get(a["paper_id"])
-        if extraction and extraction.markdown_path:
-            md_path = Path(extraction.markdown_path)
-            exists = "exists" if md_path.exists() else "missing"
-            st.caption(f"Extraction markdown: {md_path} ({exists})")
+        html_path = extraction.html_path if extraction else None
 
-        if not a["answers"]:
-            st.warning("No answers recorded.")
-            continue
-        for qa in a["answers"]:
-            st.markdown(f"**Q: {qa.get('question', '—')}**")
-            st.markdown(f"> **A:** {qa.get('answer', '—')}")
-            status_badge = "✅" if qa.get("status") == "answered" else "⚠️"
-            st.caption(f"Status: {status_badge} {qa.get('status', '—')}")
-            evidence = qa.get("evidence", [])
-            if evidence:
-                st.markdown("*Evidence:*")
-                for ev in evidence:
-                    loc = []
-                    if ev.get("page"):
-                        loc.append(f"p.{ev['page']}")
-                    if ev.get("section"):
-                        loc.append(ev["section"])
-                    loc_str = " · ".join(loc)
-                    st.markdown(f"  - *\"{ev.get('quote', '')}\"* {f'({loc_str})' if loc_str else ''}")
-            st.divider()
+        col_details, col_html = st.columns([evidence_details_width, evidence_viewer_width_pct], gap="large")
+
+        with col_details:
+            if extraction and extraction.markdown_path:
+                md_path = Path(extraction.markdown_path)
+                exists = "exists" if md_path.exists() else "missing"
+                st.caption(f"Extraction markdown: {md_path} ({exists})")
+
+            if not a["answers"]:
+                st.warning("No answers recorded.")
+            else:
+                for qa_idx, qa in enumerate(a["answers"]):
+                    st.markdown(f"**Q: {qa.get('question', '—')}**")
+                    st.markdown(f"> **A:** {qa.get('answer', '—')}")
+                    status_badge = "✅" if qa.get("status") == "answered" else "⚠️"
+                    st.caption(f"Status: {status_badge} {qa.get('status', '—')}")
+                    evidence = qa.get("evidence", [])
+                    if evidence:
+                        st.markdown("*Evidence:*")
+                        for ev_idx, ev in enumerate(evidence):
+                            loc = []
+                            if ev.get("page"):
+                                loc.append(f"p.{ev['page']}")
+                            if ev.get("section"):
+                                loc.append(ev["section"])
+                            loc_str = " · ".join(loc)
+                            quote = ev.get("quote", "")
+
+                            row_col_text, row_col_action = st.columns([0.82, 0.18])
+                            row_col_text.markdown(
+                                f"- *\"{quote}\"* {f'({loc_str})' if loc_str else ''}"
+                            )
+                            if row_col_action.button(
+                                "Find",
+                                key=f"results_find_{a['id']}_{qa_idx}_{ev_idx}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[EVIDENCE_FIND_STATE_KEY] = {
+                                    "paper_id": a["paper_id"],
+                                    "qa_idx": qa_idx,
+                                    "ev_idx": ev_idx,
+                                    "quote": quote,
+                                    "html_path": html_path,
+                                    "doctags_path": extraction.doctags_path if extraction else None,
+                                    "pdf_path": paper.file_path if paper else None,
+                                }
+                                st.rerun()
+                    st.divider()
+
+        with col_html:
+            st.markdown("#### Evidence View")
+            active_find_state = st.session_state.get(EVIDENCE_FIND_STATE_KEY)
+            selected_here = (
+                isinstance(active_find_state, dict)
+                and active_find_state.get("paper_id") == a["paper_id"]
+            )
+
+            if not selected_here:
+                st.info("Click Find next to an evidence quote to search and highlight it in HTML or PDF.")
+            else:
+                selected_quote = str(active_find_state.get("quote", ""))
+                quote_preview = selected_quote if len(selected_quote) <= 140 else f"{selected_quote[:140]}..."
+                st.caption(f"Searching for: \"{quote_preview}\"")
+
+                if st.button("Close", key=f"results_find_close_{a['id']}", use_container_width=True):
+                    st.session_state.pop(EVIDENCE_FIND_STATE_KEY, None)
+                    st.rerun()
+
+                html_tab, pdf_tab = st.tabs(["HTML", "PDF"])
+
+                with html_tab:
+                    selected_html_path = active_find_state.get("html_path")
+                    if not selected_html_path:
+                        st.warning("No extracted HTML path is available for this paper.")
+                    else:
+                        html_file = Path(selected_html_path)
+                        if not html_file.exists():
+                            st.warning(f"Extracted HTML file not found: {html_file}")
+                        else:
+                            html_content = html_file.read_text(encoding="utf-8")
+                            html_content = inline_images_as_base64(html_content, html_file)
+                            highlighted_html, found, strategy = highlight_first_match_in_html(
+                                html_content,
+                                selected_quote,
+                            )
+                            if found:
+                                if strategy == "exact":
+                                    st.success("First exact match highlighted in yellow.")
+                                elif strategy == "fallback_1":
+                                    st.success("Exact match not found; fallback 1 matched and highlighted in yellow.")
+                                elif strategy == "fallback_2":
+                                    st.success("Exact match and fallback 1 not found; fallback 2 matched and highlighted in yellow.")
+                                else:
+                                    st.success("First match highlighted in yellow.")
+                            else:
+                                st.info("No match found after exact search, fallback 1, and fallback 2.")
+                            components.html(highlighted_html, height=900, scrolling=True)
+
+                with pdf_tab:
+                    selected_pdf_path = active_find_state.get("pdf_path")
+                    selected_doctags_path = active_find_state.get("doctags_path")
+
+                    if not selected_pdf_path:
+                        st.warning("No PDF path is stored for this paper.")
+                    elif pdf_viewer is None:
+                        st.warning("Install streamlit-pdf-viewer to enable in-app PDF previews.")
+                    else:
+                        pdf_file = Path(selected_pdf_path).expanduser()
+                        if not pdf_file.is_absolute():
+                            pdf_file = (Path.cwd() / pdf_file).resolve()
+
+                        if not pdf_file.exists():
+                            st.warning(f"PDF file not found: {pdf_file}")
+                        elif not selected_doctags_path:
+                            st.warning("No extracted DocTags path is available for this paper.")
+                        else:
+                            doctags_file = Path(selected_doctags_path)
+                            if not doctags_file.exists():
+                                st.warning(f"Extracted DocTags file not found: {doctags_file}")
+                            else:
+                                doctags_content = doctags_file.read_text(encoding="utf-8")
+                                doctags_match, strategy = find_first_match_in_doctags(
+                                    doctags_content,
+                                    selected_quote,
+                                )
+                                if doctags_match is None:
+                                    st.info("No DocTags match found after exact search, fallback 1, and fallback 2.")
+                                    pdf_viewer(
+                                        str(pdf_file),
+                                        width="100%",
+                                        height=900,
+                                        viewer_align="left",
+                                        zoom_level="auto",
+                                        show_page_separator=True,
+                                        render_text=True,
+                                    )
+                                else:
+                                    if strategy == "exact":
+                                        st.success(f"First DocTags exact match highlighted on page {doctags_match.page}.")
+                                    elif strategy == "fallback_1":
+                                        st.success(
+                                            f"DocTags exact match not found; fallback 1 highlighted first match on page {doctags_match.page}."
+                                        )
+                                    else:
+                                        st.success(
+                                            f"DocTags exact match and fallback 1 not found; fallback 2 highlighted first match on page {doctags_match.page}."
+                                        )
+
+                                    pdf_viewer(
+                                        str(pdf_file),
+                                        width="100%",
+                                        height=900,
+                                        viewer_align="left",
+                                        zoom_level="auto",
+                                        show_page_separator=True,
+                                        render_text=True,
+                                        scroll_to_page=doctags_match.page,
+                                        annotations=[
+                                            doctags_match.to_pdf_annotation(
+                                                annotation_id=f"results_bbox_{a['id']}_{active_find_state.get('qa_idx')}_{active_find_state.get('ev_idx')}"
+                                            )
+                                        ],
+                                    )
 
 # ── Export ────────────────────────────────────────────────────────────────────
 

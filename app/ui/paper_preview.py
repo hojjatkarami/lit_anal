@@ -36,6 +36,7 @@ def render_paper_table_with_preview(
     title_column: str = "Title",
     viewer_title: str = "PDF Preview",
     viewer_height: int = 900,
+    viewer_pane_ratio: float = 1 / 2.4,
     empty_message: str = "No papers to display.",
 ) -> None:
     if not rows:
@@ -48,7 +49,9 @@ def render_paper_table_with_preview(
         selected_row_key = None
         st.session_state.pop(state_key, None)
 
-    table_col, viewer_col = st.columns([1.4, 1], gap="large")
+    viewer_ratio = min(0.7, max(0.3, viewer_pane_ratio))
+    table_ratio = 1.0 - viewer_ratio
+    table_col, viewer_col = st.columns([table_ratio, viewer_ratio], gap="large")
 
     with table_col:
         st.caption("Click a paper title to preview its PDF.")

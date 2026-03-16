@@ -79,6 +79,7 @@ class PaperExtraction(Base):
     html_path: Mapped[str | None] = mapped_column(Text)
     json_path: Mapped[str | None] = mapped_column(Text)
     doctags_path: Mapped[str | None] = mapped_column(Text)
+    images_dir: Mapped[str | None] = mapped_column(Text)
     extraction_status: Mapped[str] = mapped_column(String(32), default="pending")
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
