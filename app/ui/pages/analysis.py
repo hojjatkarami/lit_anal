@@ -13,6 +13,7 @@ from app.extraction.docling_pipeline import ExtractionPipeline
 from app.observability.langfuse_client import flush, trace_run
 from app.synthesis.schemas import parse_questions
 from app.synthesis.workflow import run_synthesis_for_paper
+from app.ui.paper_preview import render_paper_table_with_preview
 
 st.title("🔬 Analysis")
 st.caption("Enter your research questions and run the synthesis pipeline.")
@@ -65,6 +66,7 @@ with get_session() as _s:
             "id": p.id,
             "title": p.title,
             "year": p.year,
+            "file_path": p.file_path,
         }
         for p in paper_rows
     ]
@@ -92,6 +94,24 @@ papers_to_run = (
 )
 
 st.caption(f"{len(papers_to_run)} paper(s) will be processed.")
+
+preview_rows = [
+    {
+        "paper_id": paper["id"],
+        "row_key": paper["id"],
+        "file_path": paper.get("file_path"),
+        "Title": paper["title"] or paper["id"][:8],
+        "Year": paper["year"] or "—",
+    }
+    for paper in papers_to_run
+]
+render_paper_table_with_preview(
+    preview_rows,
+    state_key="analysis_selected_paper",
+    display_columns=["Title", "Year"],
+    viewer_title="Selected Paper PDF",
+    viewer_height=950,
+)
 
 st.divider()
 

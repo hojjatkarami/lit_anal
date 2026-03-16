@@ -10,6 +10,7 @@ import streamlit as st
 
 from app.db.models import AnalysisRun, Paper, PaperAnswer, PaperExtraction
 from app.db.session import check_connection, get_session
+from app.ui.paper_preview import render_paper_table_with_preview
 
 st.title("📊 Results")
 st.caption("View per-paper synthesis answers and export to CSV or JSON.")
@@ -178,7 +179,52 @@ status_filter = st.multiselect(
 if status_filter:
     df = df[df["Status"].isin(status_filter)]
 
+visible_answers_data = []
+for a in answers_data:
+    paper = papers.get(a["paper_id"])
+    title = (paper.title if paper else None) or a["paper_id"][:8]
+    if search and search.lower() not in title.lower():
+        continue
+    if status_filter and a["status"] not in status_filter:
+        continue
+    visible_answers_data.append(a)
+
+preview_rows = []
+for a in visible_answers_data:
+    paper = papers.get(a["paper_id"])
+    run = run_by_id[a["run_id"]]
+    preview_row = {
+        "paper_id": a["paper_id"],
+        "row_key": a["id"],
+        "file_path": paper.file_path if paper else None,
+        "Title": (paper.title if paper else None) or a["paper_id"][:8],
+        "Year": paper.year if paper else "—",
+        "Run": run["run_name"],
+        "LLM": run["llm_name"],
+        "Status": a["status"],
+    }
+    if show_short_title:
+        preview_row["Short Title"] = (paper.short_title if paper else None) or "—"
+    if show_citation_key:
+        preview_row["Citation Key"] = (paper.citation_key if paper else None) or "—"
+    preview_rows.append(preview_row)
+
 st.subheader(f"Results ({len(df)} rows)")
+preview_columns = ["Title"]
+if show_short_title:
+    preview_columns.append("Short Title")
+if show_citation_key:
+    preview_columns.append("Citation Key")
+preview_columns.extend(["Year", "Run", "LLM", "Status"])
+render_paper_table_with_preview(
+    preview_rows,
+    state_key="results_selected_paper",
+    display_columns=preview_columns,
+    viewer_title="Paper PDF",
+    viewer_height=950,
+    empty_message="No papers match the current filters.",
+)
+st.caption("The full results matrix remains available below for scanning answers across runs.")
 st.dataframe(df, use_container_width=True, height=400)
 
 # ── Expandable evidence details ───────────────────────────────────────────────

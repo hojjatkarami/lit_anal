@@ -20,14 +20,18 @@ class Settings(BaseSettings):
     zotero_api_key: str = ""
     zotero_library_id: str = ""
     zotero_library_type: str = "user"
+    zotero_max_concurrent_requests: int = 4
 
     # Database
     database_url: str = "sqlite:///./lit_anal.db"
 
     # PDF storage
     pdf_download_dir: Path = Path("./data/pdfs")
+    extraction_dir: Path = Path("./data/extractions")
     extraction_write_markdown: bool = True
-    extraction_markdown_dir: Path = Path("./data/extractions")
+    extraction_write_html: bool = True
+    extraction_write_json: bool = True
+    extraction_write_doctags: bool = True
 
     # Langfuse (optional – empty keys disable tracing)
     langfuse_public_key: str = ""

@@ -1,5 +1,6 @@
 """Unit tests for ingestion — dedup logic and Zotero field mapping."""
 import hashlib
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
@@ -146,6 +147,7 @@ def test_scan_and_index_refreshes_metadata_for_existing_duplicate(tmp_path):
         client.get_all_top_items.return_value = [{"data": {"key": "ITEM1", "title": "New Title"}}]
         client.get_pdf_attachments.return_value = [MagicMock(item_key="ATTACH1")]
         client.download_pdf.return_value = (pdf_path, file_hash)
+        client.clone.return_value = client
         client.map_item_to_fields.return_value = {
             "zotero_key": "NEWKEY",
             "title": "New Title",
@@ -181,6 +183,63 @@ def test_scan_and_index_refreshes_metadata_for_existing_duplicate(tmp_path):
     assert paper.venue == "Science"
 
 
+def test_scan_and_index_uses_worker_clones_when_parallelized(tmp_path):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"parallel paper")
+    file_hash = _sha256(pdf_path)
+
+    worker_client = MagicMock()
+    worker_client.get_pdf_attachments.side_effect = [
+        [MagicMock(item_key="ATTACH1")],
+        [MagicMock(item_key="ATTACH2")],
+    ]
+    worker_client.download_pdf.side_effect = [
+        (pdf_path, file_hash),
+        (pdf_path, file_hash),
+    ]
+
+    client = MagicMock()
+    client.get_all_top_items.return_value = [
+        {"data": {"key": "ITEM1", "title": "Paper 1"}},
+        {"data": {"key": "ITEM2", "title": "Paper 2"}},
+    ]
+    client.clone.return_value = worker_client
+    client.map_item_to_fields.return_value = {
+        "zotero_key": "NEWKEY",
+        "title": "Parallel Title",
+        "short_title": None,
+        "citation_key": None,
+        "authors": ["Jane Doe"],
+        "year": 2026,
+        "doi": None,
+        "venue": None,
+    }
+
+    progress_events: list[tuple[int, int, str]] = []
+
+    with Session(engine) as session:
+        summary = scan_and_index(
+            client=client,
+            session=session,
+            dest_dir=tmp_path,
+            max_workers=2,
+            progress_callback=lambda current, total, label: progress_events.append(
+                (current, total, label)
+            ),
+        )
+
+    assert summary.total_items == 2
+    assert summary.pdf_found == 2
+    assert summary.new_indexed == 1
+    assert summary.duplicates_skipped == 1
+    assert client.clone.call_count == 2
+    assert len(progress_events) == 2
+    assert {event[2] for event in progress_events} == {"Paper 1", "Paper 2"}
+
+
 # ── get_pdf_attachments filtering ─────────────────────────────────────────────
 
 def test_get_pdf_attachments_filters_by_content_type():
@@ -199,6 +258,24 @@ def test_get_pdf_attachments_filters_by_content_type():
     assert len(result) == 1
     assert result[0].item_key == "K1"
     assert result[0].content_type == "application/pdf"
+
+
+def test_download_pdf_moves_file_from_isolated_temp_dir(tmp_path):
+    with patch("app.ingestion.zotero_client.zotero.Zotero") as MockZot:
+        instance = MockZot.return_value
+
+        def fake_dump(attachment_key, path):
+            dumped = Path(path) / "downloaded-file.pdf"
+            dumped.write_bytes(b"pdf bytes")
+
+        instance.dump.side_effect = fake_dump
+
+        client = ZoteroClient("api", "lib")
+        local_path, file_hash = client.download_pdf("ATTACH1", tmp_path)
+
+    assert local_path == tmp_path / "ATTACH1.pdf"
+    assert local_path.exists()
+    assert file_hash == _sha256(local_path)
 
 
 def test_get_collections_builds_hierarchy_paths():

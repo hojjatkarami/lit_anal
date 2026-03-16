@@ -1,6 +1,7 @@
 """PDF text extraction using Docling."""
 from __future__ import annotations
 
+import json
 import traceback
 from pathlib import Path
 
@@ -17,15 +18,42 @@ class ExtractionPipeline:
         from docling.document_converter import DocumentConverter
         self._converter = DocumentConverter()
 
-    def _write_extraction_markdown(self, paper: Paper, markdown: str) -> str | None:
-        if not settings.extraction_write_markdown:
-            return None
+    def _write_extraction_files(
+        self, paper: Paper, result
+    ) -> dict[str, str | None]:
+        """Write each enabled format to its own subdirectory under extraction_dir.
 
-        output_dir = Path(settings.extraction_markdown_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{paper.id}.md"
-        output_path.write_text(markdown, encoding="utf-8")
-        return str(output_path)
+        Returns a mapping of format name → absolute file path (or None if disabled).
+        """
+        base = Path(settings.extraction_dir)
+        paths: dict[str, str | None] = {
+            "markdown": None,
+            "html": None,
+            "json": None,
+            "doctags": None,
+        }
+
+        formats = [
+            ("markdown", settings.extraction_write_markdown, ".md",
+             lambda: result.document.export_to_markdown()),
+            ("html", settings.extraction_write_html, ".html",
+             lambda: result.document.export_to_html()),
+            ("json", settings.extraction_write_json, ".json",
+             lambda: json.dumps(result.document.export_to_dict(), ensure_ascii=False, indent=2)),
+            ("doctags", settings.extraction_write_doctags, ".doctags",
+             lambda: result.document.export_to_doctags()),
+        ]
+
+        for fmt, enabled, ext, exporter in formats:
+            if not enabled:
+                continue
+            out_dir = base / fmt
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{paper.id}{ext}"
+            out_path.write_text(exporter(), encoding="utf-8")
+            paths[fmt] = str(out_path)
+
+        return paths
 
     def extract(self, paper: Paper, session: Session) -> PaperExtraction:
         """
@@ -51,6 +79,9 @@ class ExtractionPipeline:
             extraction.extraction_status = "failed"
             extraction.error_message = f"File not found: {paper.file_path}"
             extraction.markdown_path = None
+            extraction.html_path = None
+            extraction.json_path = None
+            extraction.doctags_path = None
             session.add(extraction)
             session.flush()
             return extraction
@@ -58,15 +89,21 @@ class ExtractionPipeline:
         try:
             result = self._converter.convert(paper.file_path)
             text_content = result.document.export_to_markdown()
-            markdown_path = self._write_extraction_markdown(paper, text_content)
+            paths = self._write_extraction_files(paper, result)
             extraction.text_content = text_content
-            extraction.markdown_path = markdown_path
+            extraction.markdown_path = paths["markdown"]
+            extraction.html_path = paths["html"]
+            extraction.json_path = paths["json"]
+            extraction.doctags_path = paths["doctags"]
             extraction.extraction_status = "completed"
             extraction.error_message = None
         except Exception as exc:
             extraction.extraction_status = "failed"
             extraction.error_message = traceback.format_exc()[:4000]
             extraction.markdown_path = None
+            extraction.html_path = None
+            extraction.json_path = None
+            extraction.doctags_path = None
 
         session.add(extraction)
         session.flush()
@@ -87,3 +124,4 @@ class ExtractionPipeline:
             extraction = self.extract(paper, session)
             results.append(extraction)
         return results
+

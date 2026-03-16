@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,10 +44,21 @@ class ZoteroCollection:
 
 class ZoteroClient:
     def __init__(self, api_key: str, library_id: str, library_type: str = "user"):
+        self.api_key = api_key
+        self.library_id = library_id
+        self.library_type = library_type
         self._zot = zotero.Zotero(
             library_id=library_id,
             library_type=library_type,
             api_key=api_key,
+        )
+
+    def clone(self) -> "ZoteroClient":
+        """Create an equivalent client for concurrent requests."""
+        return type(self)(
+            api_key=self.api_key,
+            library_id=self.library_id,
+            library_type=self.library_type,
         )
 
     # ── item listing ──────────────────────────────────────────────────────────
@@ -162,16 +174,24 @@ class ZoteroClient:
     def download_pdf(self, attachment_key: str, dest_dir: Path) -> tuple[Path, str]:
         """Download a PDF attachment and return (local_path, sha256_hex)."""
         dest_dir.mkdir(parents=True, exist_ok=True)
-        # pyzotero.dump writes the file to disk
-        self._zot.dump(attachment_key, path=str(dest_dir))
-        # Find the file that was just written (named by item key or filename)
-        written = list(dest_dir.glob(f"{attachment_key}*"))
-        if not written:
-            # fallback: look for any recently modified pdf
-            written = sorted(dest_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not written:
-            raise RuntimeError(f"Could not locate downloaded file for key {attachment_key}")
-        local_path = written[0]
+        with tempfile.TemporaryDirectory(dir=dest_dir) as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            self._zot.dump(attachment_key, path=str(temp_dir))
+            written = sorted(
+                (path for path in temp_dir.rglob("*") if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if not written:
+                raise RuntimeError(f"Could not locate downloaded file for key {attachment_key}")
+
+            downloaded_path = written[0]
+            suffix = downloaded_path.suffix or ".pdf"
+            local_path = dest_dir / f"{attachment_key}{suffix.lower()}"
+            if local_path.exists():
+                local_path.unlink()
+            shutil.move(str(downloaded_path), str(local_path))
+
         file_hash = _sha256(local_path)
         return local_path, file_hash
 

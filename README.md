@@ -15,12 +15,19 @@ MVP application for running question-driven literature synthesis over papers in 
 
 ## 1) Setup
 
-Install dependencies:
+Install `uv` if you don't have it:
 
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+```
 
-pip install -e ".[dev]"
-export PATH="$HOME/.local/bin:$PATH"
+Create and activate a virtual environment using `uv`, then install all dependencies:
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
 ```
 
 Create environment file:
@@ -38,14 +45,18 @@ Fill required values in `.env`:
 - `ZOTERO_API_KEY`
 - `ZOTERO_LIBRARY_ID`
 - `ZOTERO_LIBRARY_TYPE`
+- `ZOTERO_MAX_CONCURRENT_REQUESTS` (default `4`)
 
 Optional:
 
 - `LANGFUSE_PUBLIC_KEY`
 - `LANGFUSE_SECRET_KEY`
 - `LANGFUSE_HOST`
+- `EXTRACTION_DIR` (default `./data/extractions`) — base directory; format files are written to `{EXTRACTION_DIR}/markdown/`, `html/`, `json/`, `doctags/`
 - `EXTRACTION_WRITE_MARKDOWN` (default `true`)
-- `EXTRACTION_MARKDOWN_DIR` (default `./data/extractions`)
+- `EXTRACTION_WRITE_HTML` (default `true`)
+- `EXTRACTION_WRITE_JSON` (default `true`)
+- `EXTRACTION_WRITE_DOCTAGS` (default `true`)
 
 ## 2) Database
 
@@ -60,7 +71,7 @@ alembic upgrade head
 ## 3) Run the app
 
 ```bash
-python3.11 -m streamlit run app/ui/main.py --server.address 0.0.0.0 --server.port 8501
+streamlit run app/ui/main.py
 ```
 
 ## 4) Workflow
@@ -80,6 +91,6 @@ pytest -q
 
 ## Notes
 
-- Current MVP uses sequential batch execution with progress indicators.
+- Zotero indexing fetches attachments and downloads PDFs concurrently; database writes remain serialized.
 - PDF extraction is text-only for MVP (no figure reasoning).
 - If evidence is missing, model responses should produce `insufficient_evidence`.

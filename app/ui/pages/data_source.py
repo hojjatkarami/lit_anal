@@ -1,10 +1,13 @@
 """Data Source page — connect to Zotero, scan and index papers."""
+from pathlib import Path
+
 import streamlit as st
 
 from app.config import settings
 from app.db.session import check_connection, get_session
 from app.ingestion.indexer import get_all_papers, scan_and_index
 from app.ingestion.zotero_client import ZoteroClient
+from app.ui.paper_preview import render_paper_table_with_preview
 
 st.title("🗂️ Data Source")
 st.caption("Connect to Zotero, download PDFs, and index papers into the database.")
@@ -94,14 +97,13 @@ if st.button("🔄 Scan & Index", type="primary", disabled=not (api_key and libr
     if not check_connection():
         st.error("Database not reachable. Cannot index papers.")
     else:
-        from pathlib import Path
-
         client = ZoteroClient(
             api_key=api_key,
             library_id=library_id,
             library_type=library_type,
         )
         dest_dir = Path(pdf_dir_input)
+        max_workers = max(1, int(getattr(settings, "zotero_max_concurrent_requests", 4)))
 
         progress_bar = st.progress(0, text="Connecting to Zotero…")
         status_placeholder = st.empty()
@@ -119,6 +121,7 @@ if st.button("🔄 Scan & Index", type="primary", disabled=not (api_key and libr
                     dest_dir=dest_dir,
                     selected_collection_key=selected_collection_key,
                     progress_callback=_progress,
+                    max_workers=max_workers,
                 )
             progress_bar.progress(100, text="Done.")
             st.success(
@@ -144,12 +147,13 @@ if check_connection():
             papers = get_all_papers(session)
 
         if papers:
-            import pandas as pd
-
             show_short_title = any((p.short_title or "").strip() for p in papers)
             show_citation_key = any((p.citation_key or "").strip() for p in papers)
             rows = [
                 {
+                    "paper_id": p.id,
+                    "row_key": p.id,
+                    "file_path": p.file_path,
                     **{
                         "ID": p.id[:8] + "…",
                         "Title": p.title or "(no title)",
@@ -168,12 +172,24 @@ if check_connection():
                         "Authors": ", ".join(p.authors or [])[:60] or "—",
                         "Year": p.year or "—",
                         "DOI": p.doi or "—",
-                        "File": p.file_path or "—",
+                        "File": Path(p.file_path).name if p.file_path else "—",
                     },
                 }
                 for p in papers
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            display_columns = ["Title"]
+            if show_short_title:
+                display_columns.append("Short Title")
+            if show_citation_key:
+                display_columns.append("Citation Key")
+            display_columns.extend(["Authors", "Year", "DOI", "File"])
+            render_paper_table_with_preview(
+                rows,
+                state_key="data_source_selected_paper",
+                display_columns=display_columns,
+                viewer_title="Paper PDF",
+                viewer_height=950,
+            )
             st.caption(f"Total: {len(papers)} papers")
         else:
             st.info("No papers indexed yet. Run a scan above.")
